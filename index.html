@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Customer Purchase Predictor</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; color: #172033; background: #f2f5fa; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; box-sizing: border-box; }
+    main { width: min(100%, 420px); padding: 32px; border: 1px solid #e1e7f0; border-radius: 16px; background: white; box-shadow: 0 16px 40px #17203314; }
+    h1 { margin: 0 0 8px; font-size: 1.7rem; }
+    p { color: #596579; line-height: 1.5; }
+    label { display: block; margin: 18px 0 7px; font-weight: 600; }
+    input, button { width: 100%; box-sizing: border-box; padding: 12px; border-radius: 8px; font: inherit; }
+    input { border: 1px solid #cbd4e1; }
+    input:focus { outline: 3px solid #c9dcff; border-color: #3268c8; }
+    button { margin-top: 24px; border: 0; color: white; background: #2459b3; font-weight: 700; cursor: pointer; }
+    button:disabled { cursor: wait; opacity: .7; }
+    #result, #status { margin-top: 20px; padding: 12px; border-radius: 8px; background: #eef4ff; color: #193d78; }
+    #result[hidden] { display: none; }
+    .error { background: #fff0f0 !important; color: #8e2525 !important; }
+    .note { font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Customer purchase predictor</h1>
+    <p>Enter a customer's age and salary to estimate whether they are likely to buy.</p>
+    <form id="form">
+      <label for="age">Age</label>
+      <input id="age" name="age" type="number" min="0" max="120" step="1" required>
+      <label for="salary">Salary</label>
+      <input id="salary" name="salary" type="number" min="0" step="any" required>
+      <button id="submit" type="submit" disabled>Predict purchase</button>
+    </form>
+    <p id="status" role="status" aria-live="polite">Loading in-browser model...</p>
+    <p id="result" role="status" aria-live="polite" hidden></p>
+    <p class="note">Educational demo using a small dataset; predictions may not be reliable.</p>
+  </main>
+  <script>
+    const form = document.querySelector('#form');
+    const button = document.querySelector('#submit');
+    const status = document.querySelector('#status');
+    const result = document.querySelector('#result');
+    let model;
+
+    async function loadModel() {
+      if (typeof tf === 'undefined') throw new Error('TensorFlow.js failed to load. Check your internet connection.');
+      const response = await fetch('./storepurchasedata.csv');
+      if (!response.ok) throw new Error('Could not load the training data.');
+      const rows = (await response.text()).trim().split(/\r?\n/).map(line => line.split(','));
+      const headers = rows.shift();
+      const ageIndex = headers.indexOf('Age');
+      const salaryIndex = headers.indexOf('Salary');
+      const targetIndex = headers.indexOf('Purchased');
+      if ([ageIndex, salaryIndex, targetIndex].includes(-1)) throw new Error('Training data is missing required columns.');
+      const features = [];
+      const labels = [];
+      for (const row of rows) {
+        const age = Number(row[ageIndex]);
+        const salary = Number(row[salaryIndex]);
+        const label = Number(row[targetIndex]);
+        if (!Number.isFinite(age) || !Number.isFinite(salary) || ![0, 1].includes(label)) throw new Error('Training data contains an invalid row.');
+        features.push([age, salary]);
+        labels.push(label);
+      }
+      if (features.length < 5) throw new Error('At least five training examples are required.');
+      model = tf.tidy(() => {
+        const values = tf.tensor2d(features);
+        const mean = values.mean(0);
+        const deviation = values.sub(mean).square().mean(0).sqrt();
+        const scale = tf.where(deviation.greater(0), deviation, tf.onesLike(deviation));
+        return { mean, scale, features: values.sub(mean).div(scale), labels: tf.tensor1d(labels, 'int32') };
+      });
+      button.disabled = false;
+      status.textContent = 'Model ready. Predictions run in your browser.';
+    }
+
+    function predict(age, salary) {
+      return tf.tidy(() => {
+        const customer = tf.tensor1d([age, salary]).sub(model.mean).div(model.scale);
+        const distances = model.features.sub(customer).square().sum(1);
+        const nearest = tf.topk(distances.neg(), 5).indices;
+        return tf.gather(model.labels, nearest).sum().dataSync()[0] >= 3;
+      });
+    }
+
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      result.hidden = true;
+      result.classList.remove('error');
+      button.disabled = true;
+      try {
+        const willBuy = predict(Number(form.elements.age.value), Number(form.elements.salary.value));
+        result.textContent = willBuy ? 'Prediction: This customer is likely to buy.' : 'Prediction: This customer is unlikely to buy.';
+      } catch (error) {
+        result.textContent = error.message || 'Prediction failed.';
+        result.classList.add('error');
+      } finally {
+        result.hidden = false;
+        button.disabled = typeof model === 'undefined';
+      }
+    });
+
+    loadModel().catch(error => {
+      status.textContent = error.message || 'Could not load the in-browser model.';
+      status.classList.add('error');
+      button.disabled = true;
+    });
+  </script>
+</body>
+</html>
